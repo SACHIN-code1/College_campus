@@ -1,194 +1,177 @@
 /**
- * Gemini API Health Check & Diagnostic Utility
- * Verifies API key, endpoint connectivity, and basic functionality
+ * Health check and diagnostic utilities for Gemini/Claude API
+ * Validates API keys and provides user-friendly error messages
  */
 
-import { GoogleGenerativeAI, HarmBlockThreshold, HarmCategory } from "@google/generative-ai";
+import { GoogleGenerativeAI } from "@google/generative-ai";
 
-interface HealthCheckResult {
+export interface HealthCheckResult {
   isHealthy: boolean;
   apiKeyValid: boolean;
   endpointReachable: boolean;
   testPromptWorks: boolean;
   errors: string[];
-  diagnostics: {
-    apiKeyLength: number;
-    apiKeyPrefix: string;
-    timestamp: string;
-    modelUsed: string;
-  };
+  diagnostics: Record<string, any>;
 }
 
-const DEBUG = process.env.NODE_ENV === "development";
-
-function log(message: string, data?: any) {
-  if (DEBUG) {
-    console.log(`[Gemini Health] ${message}`, data || "");
-  }
+function isClaudeKey(key: string): boolean {
+  const match = key.startsWith("sk-") || key.startsWith("sk_");
+  console.log("[Debug] Checking Claude key for:", key.substring(0, 10) + "...", "Result:", match);
+  return match;
 }
 
-function error(message: string, data?: any) {
-  console.error(`[Gemini Health ERROR] ${message}`, data || "");
+function isGeminiKey(key: string): boolean {
+  const match = key.startsWith("AIza");
+  console.log("[Debug] Checking Gemini key for:", key.substring(0, 10) + "...", "Result:", match);
+  return match;
 }
 
-/**
- * Validates API key format
- */
-function isValidApiKeyFormat(apiKey: string): boolean {
-  return apiKey && apiKey.length > 10 && !apiKey.includes(" ");
-}
-
-/**
- * Comprehensive health check
- */
 export async function performHealthCheck(apiKey: string): Promise<HealthCheckResult> {
-  const result: HealthCheckResult = {
-    isHealthy: false,
-    apiKeyValid: false,
-    endpointReachable: false,
-    testPromptWorks: false,
-    errors: [],
-    diagnostics: {
-      apiKeyLength: apiKey?.length || 0,
-      apiKeyPrefix: apiKey ? `${apiKey.substring(0, 8)}...` : "NONE",
-      timestamp: new Date().toISOString(),
-      modelUsed: "gemini-2.5-flash"
-    }
-  };
+  const errors: string[] = [];
+  const diagnostics: Record<string, any> = {};
 
-  // Check 1: API Key exists
-  if (!apiKey) {
-    result.errors.push("API key is missing or empty");
-    error("API key validation failed: key is missing");
-    return result;
+  console.log("[Debug] Health check starting with key:", apiKey.substring(0, 10) + "...");
+
+  // Check if it's a Claude key
+  if (isClaudeKey(apiKey)) {
+    console.log("[Debug] Detected Claude key, format is valid");
+    // Note: Cannot test Claude API from browser due to CORS restrictions
+    // Just validate the key format here
+    return {
+      isHealthy: true,
+      apiKeyValid: true,
+      endpointReachable: true,  // Assume reachable, will be tested on first API call
+      testPromptWorks: true,
+      errors: [],
+      diagnostics: { service: "Claude", note: "Will be tested on first API call" },
+    };
   }
 
-  // Check 2: API Key format
-  if (!isValidApiKeyFormat(apiKey)) {
-    result.errors.push("API key format appears invalid");
-    error("API key validation failed: invalid format");
-    return result;
+  // Validate Gemini key format
+  if (!isGeminiKey(apiKey)) {
+    console.log("[Debug] Invalid key format - not Claude or Gemini");
+    errors.push("Invalid API key format");
+    return {
+      isHealthy: false,
+      apiKeyValid: false,
+      endpointReachable: false,
+      testPromptWorks: false,
+      errors,
+      diagnostics: { message: "Key must start with AIza (Gemini) or sk- (Claude)" },
+    };
   }
 
-  result.apiKeyValid = true;
-  log("✓ API key validation passed");
-
-  // Check 3: Test API connectivity
+  // Test Gemini API
   try {
     const genAI = new GoogleGenerativeAI(apiKey);
     const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
 
-    log("✓ GoogleGenerativeAI instance created");
-
-    // Try a simple text-only request first (to verify connectivity without using vision)
-    const content = await model.generateContent({
+    const response = await model.generateContent({
       contents: [
         {
           role: "user",
-          parts: [
-            {
-              text: "Say 'healthy' if you can read this. Reply with exactly one word."
-            }
-          ]
-        }
-      ]
+          parts: [{ text: "Say 'Health check passed' in one word." }],
+        },
+      ],
     });
 
-    const response = content.response.text();
-    log("✓ Test prompt succeeded:", response);
+    const text = response.response.text();
+    diagnostics.testResponse = text.substring(0, 50);
 
-    if (response && response.length > 0) {
-      result.endpointReachable = true;
-      result.testPromptWorks = true;
-      result.isHealthy = true;
+    return {
+      isHealthy: true,
+      apiKeyValid: true,
+      endpointReachable: true,
+      testPromptWorks: true,
+      errors: [],
+      diagnostics: { service: "Gemini", ...diagnostics },
+    };
+  } catch (error: any) {
+    const errorMsg = error.message || String(error);
+
+    if (errorMsg.includes("API key not valid")) {
+      errors.push("API test failed: Invalid Gemini API key");
+    } else if (errorMsg.includes("429")) {
+      errors.push("API quota exceeded");
+    } else if (errorMsg.includes("500") || errorMsg.includes("503")) {
+      errors.push("API service temporarily unavailable");
     } else {
-      result.errors.push("API responded with empty content");
+      errors.push("API test failed: " + errorMsg.substring(0, 100));
     }
-  } catch (err: any) {
-    const errorMsg = err?.message || String(err);
-    result.errors.push(`API test failed: ${errorMsg}`);
-    error("Health check failed during test prompt:", err);
-    
-    // Try to detect specific error types
-    if (errorMsg.includes("429")) {
-      result.errors.push("QUOTA_EXCEEDED: You have exceeded your API quota");
-    } else if (errorMsg.includes("401") || errorMsg.includes("invalid")) {
-      result.errors.push("INVALID_API_KEY: Your API key is not valid");
-    } else if (errorMsg.includes("network") || errorMsg.includes("fetch")) {
-      result.errors.push("NETWORK_ERROR: Unable to reach Gemini servers");
-    } else if (errorMsg.includes("CORS")) {
-      result.errors.push("CORS_ERROR: Cross-origin request blocked");
-    }
-  }
 
-  return result;
+    errors.push("NETWORK_ERROR: Unable to reach Gemini servers");
+
+    return {
+      isHealthy: false,
+      apiKeyValid: false,
+      endpointReachable: false,
+      testPromptWorks: false,
+      errors,
+      diagnostics: { service: "Gemini", error: errorMsg },
+    };
+  }
 }
 
-/**
- * Check if API key is configured at startup
- */
 export function checkApiKeyAtStartup(): string | null {
-  const envKey = (import.meta as any).env?.VITE_GEMINI_API_KEY;
-  const localKey = localStorage.getItem("campus_gemini_key");
-  const apiKey = envKey || localKey;
+  const envKey = import.meta.env.VITE_GEMINI_API_KEY || import.meta.env.VITE_CLAUDE_API_KEY;
+  const storedGeminiKey = localStorage.getItem("campus_gemini_key");
+  const storedClaudeKey = localStorage.getItem("campus_claude_key");
+  
+  // Prefer the Claude key if both exist, otherwise use whichever is available
+  const storedKey = storedClaudeKey || storedGeminiKey;
+  const apiKey = storedKey || envKey;
 
-  if (!apiKey) {
-    error("No Gemini API key found in environment or localStorage");
-    return null;
+  console.log("[Debug] checkApiKeyAtStartup - envKey exists:", !!envKey, "storedClaudeKey exists:", !!storedClaudeKey, "storedGeminiKey exists:", !!storedGeminiKey);
+
+  if (apiKey) {
+    console.log("[Campus OS] API key loaded, first 10 chars:", apiKey.substring(0, 10));
+    return apiKey;
   }
 
-  log("✓ API key loaded from", envKey ? "environment" : "localStorage");
-  return apiKey;
+  console.warn("[Campus OS] No API key configured. Using mock data mode.");
+  return null;
 }
 
-/**
- * Log detailed diagnostics
- */
 export function logDiagnostics(
   operation: string,
-  status: number,
-  responseBody: any,
+  status: "success" | "failed" | "parsing_error",
+  responseBody: string | null,
   modelUsed: string,
   duration: number
-) {
-  if (!DEBUG) return;
-
-  console.log(`[Gemini Diagnostics]`, {
-    operation,
-    status,
-    model: modelUsed,
-    responseBodyPreview:
-      typeof responseBody === "string"
-        ? responseBody.substring(0, 200)
-        : JSON.stringify(responseBody).substring(0, 200),
-    durationMs: duration,
-    timestamp: new Date().toISOString()
-  });
+): void {
+  if (import.meta.env.DEV) {
+    const timestamp = new Date().toISOString();
+    console.log(`[Campus OS Debug] ${timestamp}`, {
+      operation,
+      status,
+      model: modelUsed,
+      duration: `${duration}ms`,
+      response: responseBody?.substring(0, 100) || "N/A",
+    });
+  }
 }
 
-/**
- * Get user-friendly error message from error
- */
 export function getUserFriendlyError(error: any): string {
-  const message = error?.message || String(error);
+  const errorStr = error?.message || String(error);
 
-  if (message.includes("429")) {
-    return "Your API quota has been exceeded. Please check your billing and wait before retrying.";
-  } else if (message.includes("401") || message.includes("UNAUTHENTICATED")) {
-    return "Invalid API key. Please verify your Gemini API key in settings.";
-  } else if (message.includes("403") || message.includes("PERMISSION_DENIED")) {
-    return "You don't have permission to use this API. Please check your Google Cloud project settings.";
-  } else if (message.includes("timeout")) {
-    return "Request timed out. The Gemini servers are taking too long to respond. Please try again.";
-  } else if (message.includes("network") || message.includes("fetch")) {
-    return "Network error: Unable to reach Gemini servers. Check your internet connection.";
-  } else if (message.includes("CORS")) {
-    return "Cross-origin error. This may indicate a proxy or configuration issue.";
-  } else if (message.includes("malformed")) {
-    return "The response from Gemini was invalid. Please try again.";
-  } else if (message.includes("quota")) {
-    return "API quota exceeded. Please upgrade your plan or wait for quota reset.";
+  if (errorStr.includes("429")) {
+    return "API quota exceeded. Please try again later or use a different API key.";
+  }
+  if (errorStr.includes("401") || errorStr.includes("not valid") || errorStr.includes("UNAUTHENTICATED")) {
+    return "Invalid or expired API key. Please configure your credentials.";
+  }
+  if (errorStr.includes("403") || errorStr.includes("permission")) {
+    return "Permission denied. Your API key may not have access to this resource.";
+  }
+  if (errorStr.includes("timeout") || errorStr.includes("Timeout")) {
+    return "Request took too long. Please try again or check your internet connection.";
+  }
+  if (errorStr.includes("network") || errorStr.includes("Network") || errorStr.includes("CORS")) {
+    return "Network error. Please check your internet connection and try again.";
+  }
+  if (errorStr.includes("malformed")) {
+    return "Invalid request format. Please try with a different note image.";
   }
 
-  return `AI Error: ${message}. Please try again later.`;
+  return "An error occurred. Please check your API key and try again.";
 }

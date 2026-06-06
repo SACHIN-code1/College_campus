@@ -50,17 +50,20 @@ export const AIScan: React.FC = () => {
     // Check API key at startup
     const apiKey = checkApiKeyAtStartup();
     if (apiKey) {
-      // Perform health check in background
+      // Perform health check in background (silent)
       performHealthCheck(apiKey).then(result => {
         if (!result.isHealthy) {
-          console.warn("Gemini health check failed:", result.errors);
+          console.warn("[Campus OS] Health check failed:", result.errors);
         }
+      }).catch(() => {
+        // Silently handle health check errors
       });
     }
 
     // Load saved API keys
-    const storedKey = localStorage.getItem("campus_gemini_key") || "";
-    setLocalApiKey(storedKey);
+    const storedGeminiKey = localStorage.getItem("campus_gemini_key") || "";
+    const storedClaudeKey = localStorage.getItem("campus_claude_key") || "";
+    setLocalApiKey(storedGeminiKey || storedClaudeKey);
 
     // Initial saved decks
     const loadedDecks = storage.get<FlashcardSet[]>("campus_flashcards", []);
@@ -77,8 +80,16 @@ export const AIScan: React.FC = () => {
 
   const handleSaveApiKey = (e: React.FormEvent) => {
     e.preventDefault();
-    localStorage.setItem("campus_gemini_key", localApiKey.trim());
-    toast(localApiKey.trim() ? "Gemini API key stored locally!" : "API key removed from local storage.", "success");
+    const trimmedKey = localApiKey.trim();
+    
+    // Auto-detect and save to appropriate storage key
+    if (trimmedKey.startsWith("sk-")) {
+      localStorage.setItem("campus_claude_key", trimmedKey);
+    } else {
+      localStorage.setItem("campus_gemini_key", trimmedKey);
+    }
+    
+    toast(trimmedKey ? "API key stored locally!" : "API key removed from local storage.", "success");
     setIsKeyModalOpen(false);
   };
 

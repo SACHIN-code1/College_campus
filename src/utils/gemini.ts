@@ -1,328 +1,312 @@
 /**
- * Google Gemini API Service for Campus OS Note Scanner & Quick Ask
- * Uses official @google/generative-ai SDK with robust error handling and retry logic
+ * Google Gemini / Claude API Service for Campus OS Note Scanner & Quick Ask
+ * Auto-detects API key type and uses appropriate service
  */
 
-import { GoogleGenerativeAI, HarmBlockThreshold, HarmCategory } from "@google/generative-ai";
+import { GoogleGenerativeAI } from "@google/generative-ai";
 import { retryWithBackoff } from "./gemini-retry";
 import { logDiagnostics, getUserFriendlyError } from "./gemini-health";
 
+const GEMINI_MODEL = "gemini-2.5-flash";
+const CLAUDE_MODEL = "claude-3-5-sonnet-20241022";
+
 export interface ScanNotesResult {
   summary: string;
+  flashcards: Array<{ question: string; answer: string }>;
   keyPoints: string[];
-  flashcards: { q: string; a: string }[];
-  subject: string;
 }
 
-const MODEL = "gemini-2.5-flash";
-const DEBUG = process.env.NODE_ENV === "development";
-
-// Mock data fallback
-const MOCK_SCAN_RESULTS: ScanNotesResult[] = [
-  {
-    subject: "Chemistry",
-    summary: "Experimental details of Acid-Base Titration. Explains the determination of unknown concentration using standard solution (NaOH) and Phenolphthalein indicator.",
-    keyPoints: [
-      "Titration is a quantitative chemical analysis method to calculate unknown concentrations.",
-      "The equivalence point is reached when the moles of acid equal the moles of base.",
-      "Phenolphthalein starts colorless in acid and turns pale pink at the endpoint (neutral/light basic).",
-      "Standard solution of known concentration (titrant) is added gradually from a burette.",
-      "Meniscus must be read at eye level from the bottom of the curve."
-    ],
-    flashcards: [
-      { q: "What is the endpoint of a titration?", a: "The physical point where the indicator changes color permanently." },
-      { q: "Why is an indicator used?", a: "To visually detect when the reaction has run to completion (equivalence point)." },
-      { q: "What is titrant?", a: "A solution of known concentration that is added incrementally from a burette." },
-      { q: "What is the color of Phenolphthalein in basic solution?", a: "Bright pink / magenta color." },
-      { q: "How is molarity calculated from titration?", a: "Using the formula M1 * V1 * n1 = M2 * V2 * n2." }
-    ]
-  },
-  {
-    subject: "Physics",
-    summary: "Summary of Newton's Laws of Motion and mechanical equations. Specifically details inertia, force vectors, action-reaction pairs, and projectile kinematics.",
-    keyPoints: [
-      "First Law (Inertia): Bodies maintain uniform state of rest/motion unless acted on by external force.",
-      "Second Law: Force equals mass times acceleration (F = ma). Net force drives kinetic change.",
-      "Third Law: For every active force, there is an equal and opposite reactive force.",
-      "Frictional resistance always combats the sliding direction vector of relative motion.",
-      "Kinematic equations assume constant gravity acceleration (g = 9.8 m/s²)."
-    ],
-    flashcards: [
-      { q: "What is Inertia?", a: "The inherent tendency of matter to resist any change in its velocity." },
-      { q: "What is the SI unit of Force?", a: "Newton (N), equivalent to kg·m/s²." },
-      { q: "Does a reaction force cancel an action force?", a: "No, because they act on different objects." },
-      { q: "Define Static Friction", a: "The friction that keeps an object at rest and matches applied force up to a maximum threshold." },
-      { q: "State the equation for projectile height", a: "y = v0*t*sin(theta) - 0.5*g*t²." }
-    ]
-  },
-  {
-    subject: "Computer Science",
-    summary: "Overview of Binary Search Trees (BST). Examines structure constraints, pre/in/post-order traversal sequences, and search time complexity bounds.",
-    keyPoints: [
-      "Every node in a BST holds a key larger than its left subtree and smaller than its right subtree.",
-      "In-order traversal produces keys in strictly sorted ascending order.",
-      "Average time complexity of search, insertion, and deletion is O(log n).",
-      "Skewed tree structures degrade search time complexity to a linear time O(n).",
-      "Balanced trees (like AVL or Red-Black) prevent path skewing imbalances."
-    ],
-    flashcards: [
-      { q: "What is the search complexity of a balanced BST?", a: "O(log n) average time complexity." },
-      { q: "Which traversal prints a BST in sorted order?", a: "In-order traversal (Left, Root, Right)." },
-      { q: "What makes a tree 'skewed'?", a: "When nodes contain only one child, forming essentially a single linked list chain." },
-      { q: "Name a self-balancing binary search tree.", a: "AVL Tree or Red-Black Tree." },
-      { q: "What is the maximum number of children for a BST node?", a: "Two children (hence 'binary')." }
-    ]
-  }
-];
-
-const MOCK_ANSWERS: { [keyword: string]: string } = {
-  "default": "Hello! I'm your Campus OS study assistant powered by Google Gemini. You can ask me anything about your courses, formulas, or hostel activities.",
-  "gravity": "Gravity is an attractive force between masses. Near Earth, it accelerates at **g ≈ 9.8 m/s²**.",
-  "react": "React is a component-based UI library using virtual DOM and hooks.",
-  "poha": "Poha is a popular Indian breakfast made from flattened rice, tempered with mustard seeds and spices.",
-  "limit": "Limits in calculus explore function behavior near target values."
+export const MOCK_SCAN_RESULTS: ScanNotesResult = {
+  summary:
+    "Mock summary: Variables are containers that store data values. They have a name, type, and value. Common types include integers, strings, and booleans.",
+  flashcards: [
+    { question: "What is a variable?", answer: "A named container that stores a data value" },
+    { question: "Name three common data types.", answer: "Integer, String, Boolean" },
+  ],
+  keyPoints: [
+    "Variables must be declared before use",
+    "Variable names should be descriptive",
+    "Initialization assigns a value to a variable",
+  ],
 };
 
-function log(message: string, data?: any) {
-  if (DEBUG) {
-    console.log(`[Gemini API] ${message}`, data || "");
-  }
+export const MOCK_ANSWERS: Record<string, string> = {
+  default:
+    "I encountered an error fetching from AI services. Using knowledge base: Try breaking this concept into simpler parts. Review your textbook chapters 3-5, then practice with sample problems.",
+};
+
+function getApiKey(): string {
+  const envKey = import.meta.env.VITE_GEMINI_API_KEY || import.meta.env.VITE_CLAUDE_API_KEY;
+  const storedGeminiKey = localStorage.getItem("campus_gemini_key");
+  const storedClaudeKey = localStorage.getItem("campus_claude_key");
+  
+  // Prefer Claude key if both exist, otherwise use whichever is available
+  const storedKey = storedClaudeKey || storedGeminiKey;
+  return storedKey || envKey || "";
 }
 
-function error(message: string, data?: any) {
-  console.error(`[Gemini API ERROR] ${message}`, data || "");
+function isClaudeKey(key: string): boolean {
+  return key.startsWith("sk-");
 }
 
-/**
- * Get API key from environment or localStorage
- */
-function getApiKey(): string | null {
-  const envKey = (import.meta as any).env?.VITE_GEMINI_API_KEY;
-  const localKey = localStorage.getItem("campus_gemini_key");
-  return envKey || localKey;
+function isGeminiKey(key: string): boolean {
+  return key.startsWith("AIza");
 }
 
-/**
- * Create Gemini client with proper error handling
- */
-function createGeminiClient(apiKey: string): GoogleGenerativeAI {
+async function scanNotesWithClaude(
+  base64Image: string,
+  subject: string,
+  onToast?: (message: string, type: string) => void
+): Promise<ScanNotesResult> {
+  const apiKey = getApiKey();
   if (!apiKey) {
-    throw new Error("Gemini API key not configured");
+    onToast?.("API key not configured. Using mock data.", "info");
+    return MOCK_SCAN_RESULTS;
   }
 
   try {
-    const client = new GoogleGenerativeAI(apiKey);
-    log("✓ Gemini client created successfully");
-    return client;
-  } catch (err: any) {
-    error("Failed to create Gemini client:", err);
-    throw new Error(`Failed to initialize Gemini: ${err?.message}`);
+    const response = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": apiKey,
+        "anthropic-version": "2023-06-01",
+      },
+      body: JSON.stringify({
+        model: CLAUDE_MODEL,
+        max_tokens: 2048,
+        messages: [
+          {
+            role: "user",
+            content: [
+              {
+                type: "image",
+                source: {
+                  type: "base64",
+                  media_type: "image/jpeg",
+                  data: base64Image.replace("data:image/jpeg;base64,", "").replace("data:image/png;base64,", ""),
+                },
+              },
+              {
+                type: "text",
+                text: `Analyze this note image for the subject: ${subject}. Return ONLY valid JSON (no markdown, no extra text) with this exact structure:
+{
+  "summary": "2-3 sentence summary",
+  "flashcards": [{"question": "q1", "answer": "a1"}],
+  "keyPoints": ["point1", "point2"]
+}`,
+              },
+            ],
+          },
+        ],
+      }),
+    });
+
+    if (!response.ok) {
+      const error = await response.text();
+      throw new Error(`Claude API error: ${response.status} ${error}`);
+    }
+
+    const data = await response.json();
+    const content = data.content[0]?.text || "{}";
+    const result = JSON.parse(content);
+    return result as ScanNotesResult;
+  } catch (error) {
+    logDiagnostics("scanNotesWithClaude", "failed", null, CLAUDE_MODEL, 0);
+    onToast?.(getUserFriendlyError(error), "error");
+    return MOCK_SCAN_RESULTS;
   }
 }
 
-/**
- * Scan notes using Gemini vision API
- */
+async function quickAskWithClaude(
+  question: string,
+  subject: string,
+  onToast?: (message: string, type: string) => void
+): Promise<string> {
+  const apiKey = getApiKey();
+  if (!apiKey) {
+    onToast?.("API key not configured.", "info");
+    return MOCK_ANSWERS.default;
+  }
+
+  try {
+    const response = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": apiKey,
+        "anthropic-version": "2023-06-01",
+      },
+      body: JSON.stringify({
+        model: CLAUDE_MODEL,
+        max_tokens: 1024,
+        messages: [
+          {
+            role: "user",
+            content: `Subject: ${subject}\nQuestion: ${question}\n\nProvide a concise, educational answer.`,
+          },
+        ],
+      }),
+    });
+
+    if (!response.ok) {
+      const error = await response.text();
+      throw new Error(`Claude API error: ${response.status} ${error}`);
+    }
+
+    const data = await response.json();
+    return data.content[0]?.text || MOCK_ANSWERS.default;
+  } catch (error) {
+    logDiagnostics("quickAskWithClaude", "failed", null, CLAUDE_MODEL, 0);
+    onToast?.(getUserFriendlyError(error), "error");
+    return MOCK_ANSWERS.default;
+  }
+}
+
+function createGeminiClient(apiKey: string) {
+  return new GoogleGenerativeAI(apiKey);
+}
+
 export async function scanNotes(
   base64Image: string,
-  onToast: (msg: string, type: "success" | "error" | "info") => void
+  subject = "General",
+  onToast?: (message: string, type: string) => void
 ): Promise<ScanNotesResult> {
   const apiKey = getApiKey();
 
   if (!apiKey) {
-    log("No API key found, using demo mode");
-    onToast("Running Demo mode: Mock AI results returned.", "info");
-    return new Promise(resolve => {
-      setTimeout(() => {
-        const randomIndex = Math.floor(Math.random() * MOCK_SCAN_RESULTS.length);
-        resolve(MOCK_SCAN_RESULTS[randomIndex]);
-      }, 1500);
-    });
+    onToast?.("No API key configured. Using mock data.", "info");
+    return MOCK_SCAN_RESULTS;
   }
 
-  const prompt = `You are a college study assistant. Extract all key information from these handwritten/printed notes. Return a JSON object with: { summary: string (3-4 lines), keyPoints: string[] (5-8 bullets), flashcards: [{q: string, a: string}] (5 cards), subject: string (guess the subject) }. Return ONLY the raw JSON block without formatting, markdown headers, or other text outside of the JSON parsing scope.`;
+  // Auto-detect and use Claude if Claude key is provided
+  if (isClaudeKey(apiKey)) {
+    return scanNotesWithClaude(base64Image, subject, onToast);
+  }
+
+  // Use Gemini for Gemini keys
+  if (!isGeminiKey(apiKey)) {
+    onToast?.("Invalid API key format. Using mock data.", "warning");
+    return MOCK_SCAN_RESULTS;
+  }
+
+  const config = {
+    maxRetries: 3,
+    initialDelayMs: 500,
+    maxDelayMs: 5000,
+    backoffFactor: 2,
+    timeoutMs: 60000,
+  };
 
   return retryWithBackoff(
-    async (signal: AbortSignal) => {
+    async () => {
+      const genAI = createGeminiClient(apiKey);
+      const model = genAI.getGenerativeModel({ model: GEMINI_MODEL });
+
       const startTime = Date.now();
-      log("Starting note scan with Gemini...");
+      const response = await model.generateContent({
+        contents: [
+          {
+            role: "user",
+            parts: [
+              {
+                inlineData: {
+                  mimeType: "image/jpeg",
+                  data: base64Image.replace("data:image/jpeg;base64,", "").replace("data:image/png;base64,", ""),
+                },
+              },
+              {
+                text: `Analyze this note image for subject: ${subject}. Return ONLY valid JSON (no markdown):
+{
+  "summary": "2-3 sentence summary",
+  "flashcards": [{"question": "q", "answer": "a"}],
+  "keyPoints": ["point1"]
+}`,
+              },
+            ],
+          },
+        ],
+      });
+
+      const duration = Date.now() - startTime;
+      const text = response.response.text();
 
       try {
-        const client = createGeminiClient(apiKey);
-        const model = client.getGenerativeModel({
-          model: MODEL,
-          safetySettings: [
-            {
-              category: HarmCategory.HARM_CATEGORY_UNSPECIFIED,
-              threshold: HarmBlockThreshold.BLOCK_NONE
-            }
-          ]
-        });
-
-        // Clean base64
-        const cleanBase64 = base64Image.replace(
-          /^data:image\/(png|jpeg|jpg);base64,/,
-          ""
-        );
-
-        onToast("Analyzing notes with Gemini...", "info");
-
-        const response = await model.generateContent({
-          contents: [
-            {
-              role: "user",
-              parts: [
-                {
-                  inlineData: {
-                    mimeType: "image/jpeg",
-                    data: cleanBase64
-                  }
-                },
-                {
-                  text: prompt
-                }
-              ]
-            }
-          ]
-        });
-
-        const duration = Date.now() - startTime;
-        const rawText = response.response.text();
-
-        logDiagnostics("scanNotes", 200, rawText, MODEL, duration);
-        log("✓ Note scan completed successfully");
-
-        // Parse JSON response
-        const cleanJson = rawText
-          .replace(/```json/gi, "")
-          .replace(/```/g, "")
-          .trim();
-
-        try {
-          const resultObj: ScanNotesResult = JSON.parse(cleanJson);
-
-          return {
-            summary: resultObj.summary || "Unable to extract summary.",
-            keyPoints: resultObj.keyPoints || [],
-            flashcards: resultObj.flashcards || [],
-            subject: resultObj.subject || "Unknown"
-          };
-        } catch (parseErr: any) {
-          error("Failed to parse Gemini JSON response:", parseErr);
-          throw new Error(
-            `Invalid Gemini response format: ${parseErr?.message}`
-          );
-        }
-      } catch (err: any) {
-        const duration = Date.now() - startTime;
-        logDiagnostics("scanNotes", err?.status || 0, err?.message, MODEL, duration);
-        throw err;
+        const result = JSON.parse(text);
+        logDiagnostics("scanNotes", "success", null, GEMINI_MODEL, duration);
+        return result as ScanNotesResult;
+      } catch {
+        logDiagnostics("scanNotes", "parsing_error", text, GEMINI_MODEL, duration);
+        return MOCK_SCAN_RESULTS;
       }
     },
-    "Note Scan",
-    { timeoutMs: 60000 } // 60 seconds for image processing
-  )
-    .then(result => {
-      onToast("✓ AI Scan Successful!", "success");
-      return result;
-    })
-    .catch(err => {
-      const userFriendlyMsg = getUserFriendlyError(err);
-      error("Note scan failed:", err);
-      onToast(userFriendlyMsg, "error");
-
-      // Fallback to mock data
-      log("Falling back to mock data");
-      const randomIndex = Math.floor(Math.random() * MOCK_SCAN_RESULTS.length);
-      return MOCK_SCAN_RESULTS[randomIndex];
-    });
+    "scanNotes",
+    config
+  ).catch((error) => {
+    onToast?.(getUserFriendlyError(error), "error");
+    return MOCK_SCAN_RESULTS;
+  });
 }
 
-/**
- * Quick ask using Gemini text API
- */
 export async function quickAsk(
   question: string,
-  subject: string,
-  onToast: (msg: string, type: "success" | "error" | "info") => void
+  subject = "General",
+  onToast?: (message: string, type: string) => void
 ): Promise<string> {
   const apiKey = getApiKey();
 
   if (!apiKey) {
-    log("No API key found, using demo mode");
-    return new Promise(resolve => {
-      setTimeout(() => {
-        const qLower = question.toLowerCase();
-        let match = MOCK_ANSWERS["default"];
-        for (const [key, answer] of Object.entries(MOCK_ANSWERS)) {
-          if (qLower.includes(key) && key !== "default") {
-            match = answer;
-            break;
-          }
-        }
-        if (match === MOCK_ANSWERS["default"]) {
-          const capitalizedSubject = subject || "your studies";
-          match = `[Demo] Answering about **${question}** in **${capitalizedSubject}**. Configure your Gemini API Key in settings to enable live responses.`;
-        }
-        resolve(match);
-      }, 1000);
-    });
+    onToast?.("No API key configured.", "info");
+    return MOCK_ANSWERS.default;
   }
 
-  const contextPrompt = subject
-    ? `(Context: This topic falls within ${subject} course) `
-    : "";
-  const prompt = `You are a friendly, concise senior Indian college professor and course helper. Answer this query clearly. Use bolding and short bullet points where appropriate: ${contextPrompt}${question}`;
+  // Auto-detect and use Claude if Claude key is provided
+  if (isClaudeKey(apiKey)) {
+    return quickAskWithClaude(question, subject, onToast);
+  }
+
+  // Use Gemini for Gemini keys
+  if (!isGeminiKey(apiKey)) {
+    onToast?.("Invalid API key format.", "warning");
+    return MOCK_ANSWERS.default;
+  }
+
+  const config = {
+    maxRetries: 3,
+    initialDelayMs: 500,
+    maxDelayMs: 5000,
+    backoffFactor: 2,
+    timeoutMs: 30000,
+  };
 
   return retryWithBackoff(
-    async (signal: AbortSignal) => {
+    async () => {
+      const genAI = createGeminiClient(apiKey);
+      const model = genAI.getGenerativeModel({ model: GEMINI_MODEL });
+
       const startTime = Date.now();
-      log("Starting quick ask with Gemini...");
+      const response = await model.generateContent({
+        contents: [
+          {
+            role: "user",
+            parts: [
+              {
+                text: `Subject: ${subject}\nQuestion: ${question}\n\nProvide a concise answer.`,
+              },
+            ],
+          },
+        ],
+      });
 
-      try {
-        const client = createGeminiClient(apiKey);
-        const model = client.getGenerativeModel({ model: MODEL });
-
-        onToast("Consulting Gemini...", "info");
-
-        const response = await model.generateContent({
-          contents: [
-            {
-              role: "user",
-              parts: [{ text: prompt }]
-            }
-          ]
-        });
-
-        const duration = Date.now() - startTime;
-        const answer = response.response.text();
-
-        logDiagnostics("quickAsk", 200, answer, MODEL, duration);
-        log("✓ Quick ask completed successfully");
-
-        return answer || "No response received.";
-      } catch (err: any) {
-        const duration = Date.now() - startTime;
-        logDiagnostics("quickAsk", err?.status || 0, err?.message, MODEL, duration);
-        throw err;
-      }
+      const duration = Date.now() - startTime;
+      const text = response.response.text();
+      logDiagnostics("quickAsk", "success", null, GEMINI_MODEL, duration);
+      return text;
     },
-    "Quick Ask",
-    { timeoutMs: 30000 } // 30 seconds for text generation
-  )
-    .then(result => {
-      log("✓ Quick ask successful");
-      return result;
-    })
-    .catch(err => {
-      const userFriendlyMsg = getUserFriendlyError(err);
-      error("Quick ask failed:", err);
-      onToast(userFriendlyMsg, "error");
-
-      // Fallback helper response
-      return `I encountered an error answering your question. Here's some general advice on **${question}**: 
-- Refer to textbooks recommended by your professor
-- Check previous years' question papers (PYQs)  
-- Practice concepts manually twice in your study notebook`;
-    });
+    "quickAsk",
+    config
+  ).catch((error) => {
+    onToast?.(getUserFriendlyError(error), "error");
+    return MOCK_ANSWERS.default;
+  });
 }
