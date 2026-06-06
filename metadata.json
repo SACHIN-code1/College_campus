@@ -1,0 +1,6 @@
+{
+  "name": "Campus OS",
+  "description": "An all-in-one campus life app for Indian college students, featuring scheduling, task management, mess menus, expense splitting, and AI scan functionality.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
