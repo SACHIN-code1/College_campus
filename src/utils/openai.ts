@@ -1,4 +1,4 @@
-// Claude API Service for Campus OS Note Scanner & Quick Ask
+// OpenAI ChatGPT API Service for Campus OS Note Scanner & Quick Ask
 
 export interface ScanNotesResult {
   summary: string;
@@ -66,7 +66,7 @@ const MOCK_SCAN_RESULTS: ScanNotesResult[] = [
 ];
 
 const MOCK_ANSWERS: { [keyword: string]: string } = {
-  "default": "Hello! I'm your Campus OS study assistant. You can ask me anything about your courses, formulas, or hostel activities. For example: 'What is the formula of standard deviation?' or 'Give me a fast way to memorize periodic table.'",
+  "default": "Hello! I'm your Campus OS study assistant powered by ChatGPT. You can ask me anything about your courses, formulas, or hostel activities. For example: 'What is the formula of standard deviation?' or 'Give me a fast way to memorize periodic table.'",
   "gravity": "Gravity sits as an attractive force acting between any two physical masses. Near Earth's crust, it accelerates everything downwards at **g ≈ 9.8 m/s²**.",
   "react": "React is a famous component-based UI library developed by Meta. It operates using a virtual DOM, state hooks like `useState`, and renders reactive updates upon data changes.",
   "poha": "Poha is a popular Indian breakfast dish cooked from flattened rice, tempered with oil, mustard seeds, curry leaves, green chillies, turmeric, roasted peanuts, and finished with coriander and fresh lemon juice!",
@@ -74,14 +74,14 @@ const MOCK_ANSWERS: { [keyword: string]: string } = {
 };
 
 /**
- * Scan Notes function using direct fetch of Claude API or mock fallback
+ * Scan Notes function using OpenAI GPT-4 Vision API or mock fallback
  */
 export async function scanNotes(
   base64Image: string,
   onToast: (msg: string, type: 'success' | 'error' | 'info') => void
 ): Promise<ScanNotesResult> {
-  const envKey = (import.meta as any).env?.VITE_CLAUDE_API_KEY;
-  const localKey = localStorage.getItem("campus_claude_key");
+  const envKey = (import.meta as any).env?.VITE_OPENAI_API_KEY;
+  const localKey = localStorage.getItem("campus_openai_key");
   const apiKey = envKey || localKey || "";
 
   if (!apiKey) {
@@ -94,34 +94,30 @@ export async function scanNotes(
     });
   }
 
-  onToast("Calling Anthropic Claude API...", "info");
+  onToast("Calling OpenAI GPT-4 Vision API...", "info");
   
   try {
     const prompt = `You are a college study assistant. Extract all key information from these handwritten/printed notes. Return a JSON object with: { summary: string (3-4 lines), keyPoints: string[] (5-8 bullets), flashcards: [{q: string, a: string}] (5 cards), subject: string (guess the subject) }. Return ONLY the raw JSON block without formatting, markdown headers, or other text outside of the JSON parsing scope.`;
 
     const cleanBase64 = base64Image.replace(/^data:image\/(png|jpeg|jpg);base64,/, "");
 
-    const response = await fetch("https://api.anthropic.com/v1/messages", {
+    const response = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "x-api-key": apiKey,
-        "anthropic-version": "2023-06-01",
-        "anthropic-dangerously-allow-browser": "true"
+        "Authorization": `Bearer ${apiKey}`
       },
       body: JSON.stringify({
-        model: "claude-3-5-sonnet-20241022",
+        model: "gpt-4-vision",
         max_tokens: 1024,
         messages: [
           {
             role: "user",
             content: [
               {
-                type: "image",
-                source: {
-                  type: "base64",
-                  media_type: "image/jpeg",
-                  data: cleanBase64
+                type: "image_url",
+                image_url: {
+                  url: `data:image/jpeg;base64,${cleanBase64}`
                 }
               },
               {
@@ -135,11 +131,12 @@ export async function scanNotes(
     });
 
     if (!response.ok) {
-      throw new Error(`API returned status ${response.status}`);
+      const errorData = await response.json();
+      throw new Error(`API returned status ${response.status}: ${errorData.error?.message || 'Unknown error'}`);
     }
 
     const data = await response.json();
-    const rawText = data.content?.[0]?.text || "{}";
+    const rawText = data.choices?.[0]?.message?.content || "{}";
     
     // Clean potential markdown wrap
     const cleanJson = rawText.replace(/```json/gi, "").replace(/```/g, "").trim();
@@ -153,8 +150,8 @@ export async function scanNotes(
     };
 
   } catch (error: any) {
-    console.error("Claude API Error:", error);
-    onToast(`Claude API Error: ${error.message || "Failed"}. Reverting to Demo mock data.`, "error");
+    console.error("OpenAI API Error:", error);
+    onToast(`OpenAI API Error: ${error.message || "Failed"}. Reverting to Demo mock data.`, "error");
     
     // Fallback on error to keep system demo working flawlessly
     const randomIndex = Math.floor(Math.random() * MOCK_SCAN_RESULTS.length);
@@ -163,15 +160,15 @@ export async function scanNotes(
 }
 
 /**
- * Quick Ask function using direct fetch of Claude API or mock assistant answer
+ * Quick Ask function using OpenAI ChatGPT API or mock assistant answer
  */
 export async function quickAsk(
   question: string,
   subject: string,
   onToast: (msg: string, type: 'success' | 'error' | 'info') => void
 ): Promise<string> {
-  const envKey = (import.meta as any).env?.VITE_CLAUDE_API_KEY;
-  const localKey = localStorage.getItem("campus_claude_key");
+  const envKey = (import.meta as any).env?.VITE_OPENAI_API_KEY;
+  const localKey = localStorage.getItem("campus_openai_key");
   const apiKey = envKey || localKey || "";
 
   if (!apiKey) {
@@ -187,51 +184,50 @@ export async function quickAsk(
         }
         if (match === MOCK_ANSWERS["default"]) {
           const capitalizedSubject = subject ? subject : "your studies";
-          match = `[Demo Response] Thank you for asking about **${question}** in context of **${capitalizedSubject}**. To fetch real-time intelligence, please configure your **Anthropic API Key** in Settings (gear icon in header). Currently running on local AI heuristics!`;
+          match = `[Demo Response] Thank you for asking about **${question}** in context of **${capitalizedSubject}**. To fetch real-time intelligence, please configure your **OpenAI API Key** in Settings (gear icon in header). Currently running on local AI heuristics!`;
         }
         resolve(match);
       }, 1000);
     });
   }
 
-  onToast("Consulting Claude AI...", "info");
+  onToast("Consulting ChatGPT...", "info");
 
   try {
     const contextPrompt = subject ? `(Context: This topic falls within ${subject} course) ` : "";
     const prompt = `You are a friendly, concise senior Indian college professor and course helper. Answer this query clearly. Use bolding and short bullet points where appropriate: ${contextPrompt}${question}`;
 
-    const response = await fetch("https://api.anthropic.com/v1/messages", {
+    const response = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "x-api-key": apiKey,
-        "anthropic-version": "2023-06-01",
-        "anthropic-dangerously-allow-browser": "true"
+        "Authorization": `Bearer ${apiKey}`
       },
       body: JSON.stringify({
-        model: "claude-3-5-sonnet-20241022",
+        model: "gpt-4-turbo",
         max_tokens: 1024,
         messages: [
           {
             role: "user",
-            content: [{ type: "text", text: prompt }]
+            content: prompt
           }
         ]
       })
     });
 
     if (!response.ok) {
-      throw new Error(`API returned status ${response.status}`);
+      const errorData = await response.json();
+      throw new Error(`API returned status ${response.status}: ${errorData.error?.message || 'Unknown error'}`);
     }
 
     const data = await response.json();
-    return data.content?.[0]?.text || "No response received.";
+    return data.choices?.[0]?.message?.content || "No response received.";
 
   } catch (error: any) {
-    console.error("Claude Quick Ask Error:", error);
+    console.error("OpenAI Quick Ask Error:", error);
     onToast(`AI Connection Error: ${error.message || "Failed"}. Displaying helper answer.`, "error");
     
-    return `[Local Help Error Fallback] Unable to contact the live Claude server. This may be due to CORS restrictions or a missing API Key. 
+    return `[Local Help Error Fallback] Unable to contact the live ChatGPT server. This may be due to CORS restrictions or a missing API Key. 
 
 Here is some general advice on **${question}**: 
 - Refer to textbooks recommended by your professor.

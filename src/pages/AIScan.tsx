@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from "react";
 import { Cpu, Camera, Send, Settings, BookOpen, ChevronLeft, ChevronRight, Bookmark, Sparkles, HelpCircle, FileText, CheckCircle2 } from "lucide-react";
 import { storage, FlashcardSet, Flashcard } from "../utils/storage";
-import { scanNotes, quickAsk, ScanNotesResult } from "../utils/claude";
+import { scanNotes, quickAsk, ScanNotesResult } from "../utils/gemini";
+import { checkApiKeyAtStartup, performHealthCheck } from "../utils/gemini-health";
 import { useToast } from "../components/Toast";
 import { Modal } from "../components/Modal";
 import { LoadingSpinner } from "../components/LoadingSpinner";
@@ -46,8 +47,19 @@ export const AIScan: React.FC = () => {
   const [chatHistory, setChatHistory] = useState<ChatMessage[]>([]);
 
   useEffect(() => {
-    // Loaded saved API keys
-    const storedKey = localStorage.getItem("campus_api_key") || "";
+    // Check API key at startup
+    const apiKey = checkApiKeyAtStartup();
+    if (apiKey) {
+      // Perform health check in background
+      performHealthCheck(apiKey).then(result => {
+        if (!result.isHealthy) {
+          console.warn("Gemini health check failed:", result.errors);
+        }
+      });
+    }
+
+    // Load saved API keys
+    const storedKey = localStorage.getItem("campus_gemini_key") || "";
     setLocalApiKey(storedKey);
 
     // Initial saved decks
@@ -58,15 +70,15 @@ export const AIScan: React.FC = () => {
     setChatHistory([
       {
         sender: "assistant",
-        text: "Hey! I'm your PWA virtual helper. Ask me any doubts, math calculations, or exam preparations. Select a subject below to ground my answering context!"
+        text: "Hey! I'm your PWA virtual helper powered by Google Gemini. Ask me any doubts, math calculations, or exam preparations. Select a subject below to ground my answering context!"
       }
     ]);
   }, []);
 
   const handleSaveApiKey = (e: React.FormEvent) => {
     e.preventDefault();
-    localStorage.setItem("campus_api_key", localApiKey.trim());
-    toast(localApiKey.trim() ? "Claude API key stored locally!" : "API key removed from local storage.", "success");
+    localStorage.setItem("campus_gemini_key", localApiKey.trim());
+    toast(localApiKey.trim() ? "Gemini API key stored locally!" : "API key removed from local storage.", "success");
     setIsKeyModalOpen(false);
   };
 
@@ -297,18 +309,18 @@ export const AIScan: React.FC = () => {
             {selectedImage && !isLoadingScan && !scanResult && (
               <button 
                 className="btn-primary" 
-                onClick={handleScanTrigger} 
+                onClick={handleScanTrigger}
                 style={{ marginBottom: "16px" }}
                 id="btn-trigger-ai-scan-action"
               >
-                Scan with Claude AI
+                Scan with Gemini
               </button>
             )}
 
             {/* LOADING STATE */}
             {isLoadingScan && (
               <div style={{ background: "var(--bg2)", border: "1px solid var(--border)", borderRadius: "14px", padding: "16px", marginBottom: "16px" }}>
-                <LoadingSpinner message="Claude are analyzing your notes. Generating summary & flashcard decks..." />
+                <LoadingSpinner message="Gemini is analyzing your notes. Generating summary & flashcard decks..." />
               </div>
             )}
 
@@ -623,17 +635,17 @@ export const AIScan: React.FC = () => {
       </Modal>
 
       {/* Discrete Local API Key Setting Drawer */}
-      <Modal isOpen={isKeyModalOpen} onClose={() => setIsKeyModalOpen(false)} title="Anthropic API Credentials">
+      <Modal isOpen={isKeyModalOpen} onClose={() => setIsKeyModalOpen(false)} title="Google Gemini API Credentials">
         <form onSubmit={handleSaveApiKey} style={{ display: "flex", flexDirection: "column", gap: "14px" }} id="api-key-config-form">
           <p style={{ fontSize: "0.82rem", color: "var(--text2)", lineHeight: 1.4 }} id="api-settings-info-blurb">
-            This PWA calls Claude API direct from browser. Type your private API key below. We save this purely inside your browser's private local state storage.
+            This PWA uses Google Gemini API. Your API key is stored securely in your browser's local storage only. Never shared with external servers.
           </p>
 
           <div className="form-group">
-            <label className="form-label">Claude API Key</label>
+            <label className="form-label">Gemini API Key</label>
             <input
               type="password"
-              placeholder="sk-ant-..."
+              placeholder="AIza..."
               className="form-input"
               value={localApiKey}
               onChange={(e) => setLocalApiKey(e.target.value)}
